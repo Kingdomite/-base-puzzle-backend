@@ -96,37 +96,41 @@ app.post('/api/games/submit', async (req, res) => {
   }
 });
 
-// Get player stats
+// Get player stats (using Supabase REST API)
 app.get('/api/players/:address', async (req, res) => {
   const { address } = req.params;
+  const lowerAddress = address.toLowerCase();
 
   try {
-    const client = await pool.connect();
+    // Get player data
+    const { data: playerData, error: playerError } = await supabase
+      .from('players')
+      .select('*')
+      .eq('address', lowerAddress)
+      .single();
 
-    const playerResult = await client.query(
-      'SELECT * FROM players WHERE address = $1',
-      [address.toLowerCase()]
-    );
+    if (playerError && playerError.code !== 'PGRST116') throw playerError;
 
-    const achievementsResult = await client.query(
-      'SELECT achievement_id, earned_at, minted FROM achievements WHERE player_address = $1',
-      [address.toLowerCase()]
-    );
+    // Get achievements
+    const { data: achievementsData, error: achievementsError } = await supabase
+      .from('achievements')
+      .select('achievement_id, earned_at, minted')
+      .eq('player_address', lowerAddress);
 
-    client.release();
+    if (achievementsError) throw achievementsError;
 
-    if (playerResult.rows.length === 0) {
+    if (!playerData) {
       return res.json({ exists: false });
     }
 
     res.json({
       exists: true,
-      player: playerResult.rows[0],
-      achievements: achievementsResult.rows
+      player: playerData,
+      achievements: achievementsData || []
     });
   } catch (error) {
     console.error('Error fetching player:', error);
-    res.status(500).json({ error: 'Failed to fetch player data' });
+    res.status(500).json({ error: 'Failed to fetch player data', details: error.message });
   }
 });
 
@@ -134,22 +138,23 @@ app.get('/api/players/:address', async (req, res) => {
 
 const { ethers } = require('ethers');
 
-// Generate achievement signature
+// Generate achievement signature (using Supabase REST API)
 app.post('/api/achievements/signature', async (req, res) => {
   const { playerAddress, achievementId } = req.body;
+  const lowerAddress = playerAddress.toLowerCase();
 
   try {
-    const client = await pool.connect();
-
     // Check if player has earned this achievement
-    const result = await client.query(
-      'SELECT * FROM achievements WHERE player_address = $1 AND achievement_id = $2',
-      [playerAddress.toLowerCase(), achievementId]
-    );
+    const { data, error } = await supabase
+      .from('achievements')
+      .select('*')
+      .eq('player_address', lowerAddress)
+      .eq('achievement_id', achievementId)
+      .single();
 
-    client.release();
+    if (error && error.code !== 'PGRST116') throw error;
 
-    if (result.rows.length === 0) {
+    if (!data) {
       return res.status(403).json({ error: 'Achievement not earned' });
     }
 
@@ -164,7 +169,7 @@ app.post('/api/achievements/signature', async (req, res) => {
     res.json({ signature });
   } catch (error) {
     console.error('Error generating signature:', error);
-    res.status(500).json({ error: 'Failed to generate signature' });
+    res.status(500).json({ error: 'Failed to generate signature', details: error.message });
   }
 });
 
@@ -195,24 +200,27 @@ app.get('/api/leaderboard', async (req, res) => {
   }
 });
 
-// Get leaderboard for tournament
+// Get leaderboard for tournament (using Supabase REST API)
 app.get('/api/tournaments/:tournamentId/leaderboard', async (req, res) => {
   const { tournamentId } = req.params;
 
   try {
-    const client = await pool.connect();
+    const { data, error } = await supabase
+      .from('players')
+      .select('address, best_score, total_games')
+      .order('best_score', { ascending: false })
+      .limit(50);
 
-    // Show all players by best score (not just tournament games)
-    const result = await client.query(`
-      SELECT address as player_address, best_score, total_games as games_played
-      FROM players
-      ORDER BY best_score DESC
-      LIMIT 50
-    `);
+    if (error) throw error;
 
-    client.release();
+    // Format response to match frontend expectations
+    const leaderboard = data.map(player => ({
+      player_address: player.address,
+      best_score: player.best_score,
+      games_played: player.total_games
+    }));
 
-    res.json({ leaderboard: result.rows });
+    res.json({ leaderboard });
   } catch (error) {
     console.error('Error fetching leaderboard:', error);
     res.status(500).json({ error: 'Failed to fetch leaderboard', details: error.message });
